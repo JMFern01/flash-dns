@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"syscall"
 )
 
 var (
@@ -23,29 +22,29 @@ func init() {
 	flag.StringVar(&upstreamDns, "d", "1.1.1.1", "Upstream DNS to consult ips")
 }
 
-func main() {
-	flag.Parse()
+func verifications() {
 	if os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "Script must be run a root")
 		os.Exit(1)
 	}
 
+	if err = logger.Init(logger.DefaultPath); err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to initialize logger: "+err.Error())
+		os.Exit(1)
+	}
+}
+
+func startServer() {
 	var (
 		ctx     context.Context
 		cancel  context.CancelFunc
 		sigChan chan os.Signal = make(chan os.Signal, 1)
 	)
 
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
+	signal.Notify(sigChan, os.Interrupt, os.Kill)
 
 	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
-
-	if err = logger.Init(logger.DefaultPath); err != nil {
-		cancel()
-		fmt.Fprintln(os.Stderr, "Failed to initialize logger: "+err.Error())
-		os.Exit(1)
-	}
 
 	go func() {
 		var sig os.Signal = <-sigChan
@@ -63,4 +62,10 @@ func main() {
 	}
 
 	logger.Info("Server Shutdown Complete and Successfully")
+}
+
+func main() {
+	flag.Parse()
+	verifications()
+	startServer()
 }
