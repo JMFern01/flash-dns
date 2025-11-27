@@ -5,7 +5,9 @@ import (
 	"dns-server/internal/logger"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -58,7 +60,7 @@ func parseDomainName(data []byte, offset int) (string, int) {
 		position += length // goes to the next length byte
 	}
 
-	return builder.String(), pos
+	return builder.String(), position
 }
 
 func extractTTL(response []byte) uint32 {
@@ -76,7 +78,7 @@ func extractTTL(response []byte) uint32 {
 	for i := 0; i < int(qdcount); i++ {
 
 		//skip domain name
-		for pos < len(response) && response[position] != 0 {
+		for position < len(response) && response[position] != 0 {
 			if response[position] >= 192 { //compression pointer
 				position += 2
 				break
@@ -155,7 +157,7 @@ func (s *DNSServer) handleQuery(query []byte, clientAddr *net.UDPAddr, conn *net
 	if cachedResponse, found := s.cache.Get(cacheKey); found {
 		logger.Info(fmt.Sprintf("Cache Hit: %s", cacheKey))
 
-		var response []byte = make([]byte, 0, len(cachedResponse))
+		var response []byte = make([]byte, len(cachedResponse))
 		copy(response, cachedResponse)
 		copy(response[0:2], query[0:2])
 
@@ -169,7 +171,7 @@ func (s *DNSServer) handleQuery(query []byte, clientAddr *net.UDPAddr, conn *net
 		n            int
 		ttl          uint32
 		err          error
-		response     []byte = make([]byte, 0, 512)
+		response     []byte = make([]byte, 512)
 	)
 	upstreamConn, err = net.Dial("udp", s.upstreamDNS)
 	if err != nil {
@@ -201,10 +203,10 @@ func (s *DNSServer) handleQuery(query []byte, clientAddr *net.UDPAddr, conn *net
 
 func (s *DNSServer) Start() error {
 	var (
-		err    error
-		errMsg string
-		addr   *net.UDPAddr
-		conn   *net.UDPConn
+		err      error
+		errorMsg string
+		addr     *net.UDPAddr
+		conn     *net.UDPConn
 	)
 	addr, err = net.ResolveUDPAddr("udp", s.localAddr)
 	if err != nil {
@@ -232,7 +234,7 @@ func (s *DNSServer) Start() error {
 		}
 	}()
 
-	var buffer []byte = make([]byte, 0, 512)
+	var buffer []byte = make([]byte, 512)
 	for {
 		var (
 			n          int
@@ -245,10 +247,11 @@ func (s *DNSServer) Start() error {
 			continue
 		}
 
-		var query []byte = make([]byte, 0, n)
+		var query []byte = make([]byte, n)
 		copy(query, buffer[:n])
 
 		go s.handleQuery(query, clientAddr, conn)
 	}
 
+	return nil
 }
