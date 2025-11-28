@@ -100,14 +100,14 @@ func (s *DNSServer) Start(ctx context.Context) error {
 	if err != nil {
 		errorMsg = fmt.Sprintf("Failed to resolve address: %s", err.Error())
 		logger.Error(errorMsg)
-		return fmt.Errorf(errorMsg)
+		return fmt.Errorf("%s", errorMsg)
 	}
 
 	conn, err = net.ListenUDP("udp", addr)
 	if err != nil {
 		errorMsg = fmt.Sprintf("Failed to listen: %s", err.Error())
 		logger.Error(errorMsg)
-		return fmt.Errorf(errorMsg)
+		return fmt.Errorf("%s", errorMsg)
 	}
 	defer conn.Close()
 

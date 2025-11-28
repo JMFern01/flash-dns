@@ -5,9 +5,11 @@ import (
 	"time"
 )
 
+const CACHE_MAX_SIZE int = 1024
+
 type CacheEntry struct {
-	Response  []byte
 	ExpiresAt time.Time
+	Response  []byte
 }
 
 type DNSCache struct {
@@ -19,19 +21,19 @@ type DNSCache struct {
 func NewDNSCache() *DNSCache {
 	return &DNSCache{
 		entries: make(map[string]*CacheEntry, 1024),
-		maxSize: 1024,
+		maxSize: CACHE_MAX_SIZE,
 	}
 }
 
 func (c *DNSCache) Get(key string) ([]byte, bool) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	var (
 		exists bool
 		entry  *CacheEntry
 	)
-
 	entry, exists = c.entries[key]
+	c.mu.RUnlock()
+
 	if !exists {
 		return nil, false
 	}
