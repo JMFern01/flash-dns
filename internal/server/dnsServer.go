@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"dns-server/internal/cache"
+	"dns-server/internal/filter"
 	"dns-server/internal/logger"
 	"dns-server/internal/utils"
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -15,15 +17,25 @@ type DNSServer struct {
 	cache       *cache.DNSCache
 	upstreamDNS string
 	localAddr   string
+	filterList  *filter.FilterList
+	filterMode  string //nxdomain or null
+	//nx domain responds with name doesnt exist and null redirects to 0.0.0.0
+
+	//statistics
+	mu           sync.RWMutex
+	blockedCount uint64
+	allowedCount uint64
 }
 
-func NewDNSServer(localAddr, upstreamDNS string) *DNSServer {
+func NewDNSServer(localAddr, upstreamDNS string, filterList *filter.FilterList) *DNSServer {
 
 	var dnsPort string = ":53"
 	return &DNSServer{
 		cache:       cache.NewDNSCache(),
 		upstreamDNS: upstreamDNS + dnsPort,
 		localAddr:   localAddr + dnsPort,
+		filterList:  filterList,
+		filterMode:  "nxdomain", //default to nxdomain
 	}
 }
 
@@ -37,6 +49,31 @@ func (s *DNSServer) handleQuery(ctx context.Context, query []byte, clientAddr *n
 	var (
 		cacheKey string = utils.CreateCacheKey(query)
 	)
+
+	if s.filterList != nil {
+		var domainName string = utils.ParseDomainName(query)
+		if s.filterList.IsBlocked(domain) {
+			s.mu.Lock()
+			s.blockedCount++
+			s.mu.Unlock()
+
+			logger.Info(fmt.Sprintf("BLOCKED: %s", domain))
+			var response []byte
+			if s.filterMode == "null" {
+				response = CreateNullResponse(query)
+			} else {
+				response = CreateBlockedResponse(query)
+			}
+
+			conn.WriteToUDP(response, clientAddr)
+			return
+
+		}
+	}
+
+	s.mu.Lock()
+	s.allowedCount++
+	s.mu.Unlock()
 
 	if cachedResponse, found := s.cache.Get(cacheKey); found {
 		logger.Info(fmt.Sprintf("Cache Hit: %s", cacheKey))

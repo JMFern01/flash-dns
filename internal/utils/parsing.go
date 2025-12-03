@@ -41,6 +41,41 @@ func parseDomainName(data []byte, offset int) (string, int) {
 	return builder.String(), position
 }
 
+func ParseDomainName(query []byte) string {
+	if len(query) < 12 {
+		return ""
+	}
+
+	var (
+		domain   *strings.Builder = builderPool.Get().(*strings.Builder)
+		position int              = 12
+		length   int
+	)
+	domain.Reset()
+	defer builderPool.Put(domain)
+
+	for position < len(query) {
+		length = int(query[position])
+		if length == 0 {
+			break
+		}
+
+		if domain.Len() > 0 {
+			domain.WriteRune('.')
+		}
+
+		position++
+		if position+length > len(query) {
+			break
+		}
+
+		_, _ = domain.Write(query[position : position+length])
+		position += length
+	}
+
+	return domain.String()
+}
+
 func ExtractTTL(response []byte) uint32 {
 	var result uint32 = 300 //default to 5 minutes (300 seconds)
 

@@ -1,6 +1,11 @@
 package filter
 
 import (
+	"bufio"
+	"encoding/binary"
+	"flash-dns/internal/logger"
+	"fmt"
+	"os"
 	"strings"
 	"sync"
 )
@@ -20,4 +25,152 @@ func (f *FilterList) Add(domain string) {
 
 	domain = strings.ToLower(strings.TrimSpace(domain))
 	b.domains[domain] = true
+}
+
+// match wildcard, if googleads.com is blocked, ads.googleads.com is also blocked
+func (f *FilterList) IsBlocked(domain string) bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	var (
+		exists       bool
+		parts        []string
+		parentDomain string
+	)
+
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	_, exists = f.domains[domain]
+	if exists {
+		return true
+	}
+
+	parts = strings.Split(domain, ".")
+	for i := 0; i < len(parts); i++ {
+		parentDomain = strings.Join(parts[i:], ".")
+		_, exists = f.domains[parentDomain]
+		if exists {
+			return true
+		}
+	}
+
+	for blocked := range f.domains {
+		if strings.Contains(domain, blocked) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (f *FilterList) LoadFromFile(filename string) error {
+	var (
+		file    *os.File
+		err     error
+		scanner *bufio.Scanner
+		count   int
+		line    string
+		fields  []string
+	)
+	if err = logger.Init(logger.DefaultPath); err != nil {
+		return err
+	}
+
+	file, err = os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	scanner = bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line = strings.TrimSpace(scanner.Text())
+
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		fields = strings.Fields(line)
+		if len(fields) >= 2 {
+			f.Add(fields[1])
+		} else if len(fields) == 1 {
+			f.Add(fields[0])
+		}
+
+		count++
+	}
+
+	logger.Info(fmt.Sprintf("Loaded %d domains to Filter from %s", count, filename))
+	return scanner.Err()
+}
+
+// returns the count of blocked domains
+func (f *FilterList) Count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.domain)
+}
+
+func CreateBlockedResponse(query []byte) []byte {
+	if len(query) < 12 {
+		return query
+	}
+
+	var (
+		response []byte = make([]byte, len(query))
+		flags    uint16 = 0x8183
+		ancount  uint16 = 0
+	)
+	copy(response, query)
+
+	// QR = 1 (response) OPCODE = 0 (standard query)
+	// AA=1 (authoritative) and RCODE = 3 (domain not found)
+	// result, flags = 0x8183
+	binary.BigEndian.PutUint16(response[2:4], flags)
+	binary.BigEndian.PutUint16(response[6:8], ancount)
+
+	return response
+}
+
+func CreateNullResponse(query []byte) []byte {
+	if len(query) < 12 {
+		return query
+	}
+
+	var (
+		response []byte = make([]byte, len(query)+16)
+		flags    uint16 = 0x8180
+		ancount  uint16 = 1
+		position int    = len(query)
+	)
+	copy(response, query)
+
+	binary.BigEndian.PutUint16(response[2:4], flags)
+	binary.BigEndian.PutUint16(response[6:8], ancount)
+
+	response[position] = 0xC0
+	response[position+1] = 0x0C
+	position += 2
+
+	// Type: A (0x0001)
+	binary.BigEndian.PutUint16(response[position:position+2], 1)
+	position += 2
+
+	// Type: IN (0x0001)
+	binary.BigEndian.PutUint16(response[position:position+2], 1)
+	position += 2
+
+	// TTL: 60 seconds
+	binary.BigEndian.PutUint16(response[position:position+4], 60)
+	position += 4
+
+	// RDLENGTH: 4 bytes (IPv4 address)
+	binary.BigEndian.PutUint16(response[position:position+2], 4)
+	position += 2
+
+	response[position] = 0
+	response[position+1] = 0
+	response[position+2] = 0
+	response[position+3] = 0
+	position += 4
+
+	return response[:position]
 }
