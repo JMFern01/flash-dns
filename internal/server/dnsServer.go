@@ -43,14 +43,13 @@ func (s *DNSServer) dialUpstremDns(query []byte) []byte {
 	var (
 		upstreamConn net.Conn
 		n            int
-		ttl          uint32
 		err          error
 		response     []byte = make([]byte, 512)
 	)
 	upstreamConn, err = net.Dial("udp", s.upstreamDNS)
 	if err != nil {
 		logger.Error(fmt.Sprintf("Error connecting to upstream: %s", s.upstreamDNS))
-		return
+		return response
 	}
 	defer upstreamConn.Close()
 	upstreamConn.SetDeadline(time.Now().Add(5 * time.Second))
@@ -58,14 +57,14 @@ func (s *DNSServer) dialUpstremDns(query []byte) []byte {
 	_, err = upstreamConn.Write(query)
 	if err != nil {
 		logger.Error(fmt.Sprintf("Error writing to upstream: %s", err.Error()))
-		return
+		return response
 	}
 
 	n, err = upstreamConn.Read(response)
 	if err != nil {
 		logger.Error(fmt.Sprintf("Error reading from upstream: %s", err.Error()))
 		response = nil
-		return
+		return response
 	}
 	copy(response, response[:n])
 	return response
@@ -84,17 +83,17 @@ func (s *DNSServer) handleQuery(ctx context.Context, query []byte, clientAddr *n
 
 	if s.filterList != nil {
 		var domainName string = utils.ParseDomainName(query)
-		if s.filterList.IsBlocked(domain) {
+		if s.filterList.IsBlocked(domainName) {
 			s.mu.Lock()
 			s.blockedCount++
 			s.mu.Unlock()
 
-			logger.Info(fmt.Sprintf("BLOCKED: %s", domain))
+			logger.Info(fmt.Sprintf("BLOCKED: %s", domainName))
 			var response []byte
 			if s.filterMode == "null" {
-				response = CreateNullResponse(query)
+				response = filter.CreateNullResponse(query)
 			} else {
-				response = CreateBlockedResponse(query)
+				response = filter.CreateBlockedResponse(query)
 			}
 
 			conn.WriteToUDP(response, clientAddr)
