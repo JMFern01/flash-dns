@@ -110,7 +110,7 @@ func (f *FilterList) Count() int {
 func normalizeDomain(domain string) string {
 	domain = strings.ToLower(domain)
 	domain = strings.TrimSpace(domain)
-	domain = strings.TrimSufix(domain, ".")
+	domain = strings.TrimSuffix(domain, ".")
 	return domain
 }
 
