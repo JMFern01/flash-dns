@@ -17,7 +17,7 @@ type FilterList struct {
 }
 
 func NewFilterList() *FilterList {
-	var defaultSize int = 8192 // 2^13 = 8192
+	const defaultSize int = 8192 // 2^13 = 8192
 	return &FilterList{domains: make(map[string]bool, defaultSize)}
 }
 
@@ -25,7 +25,7 @@ func (f *FilterList) Add(domain string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	domain = strings.ToLower(strings.TrimSpace(domain))
+	domain = normalizeDomain(domain)
 	f.domains[domain] = true
 }
 
@@ -37,7 +37,7 @@ func (f *FilterList) IsBlocked(domain string) bool {
 		found    bool
 		dotIndex int
 	)
-	domain = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(domain, ".")))
+	domain = normalizeDomain(domain)
 
 	for {
 		if _, found = f.domains[domain]; found {
@@ -80,7 +80,10 @@ func (f *FilterList) LoadFromFile(filename string) error {
 	for scanner.Scan() {
 		line = strings.TrimSpace(scanner.Text())
 
-		if line == "" || strings.HasPrefix(line, "!") || strings.HasPrefix(line, "[") || strings.HasPrefix(line, "@@") {
+		if line == "" ||
+			strings.HasPrefix(line, "!") ||
+			strings.HasPrefix(line, "[") ||
+			strings.HasPrefix(line, "@@") {
 			continue
 		}
 
@@ -102,6 +105,13 @@ func (f *FilterList) Count() int {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return len(f.domains)
+}
+
+func normalizeDomain(domain string) string {
+	domain = strings.ToLower(domain)
+	domain = strings.TrimSpace(domain)
+	domain = strings.TrimSufix(domain, ".")
+	return domain
 }
 
 func CreateBlockedResponse(query []byte) []byte {
