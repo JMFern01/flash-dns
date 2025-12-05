@@ -137,11 +137,6 @@ func (s *DNSServer) Start(ctx context.Context) error {
 		addr     *net.UDPAddr
 		conn     *net.UDPConn
 	)
-	if err = logger.Init(logger.DefaultPath); err != nil {
-		fmt.Fprintln(os.Stderr, "Log couldn't be initialized")
-		os.Exit(1)
-	}
-
 	addr, err = net.ResolveUDPAddr("udp", s.localAddr)
 	if err != nil {
 		errorMsg = fmt.Sprintf("Failed to resolve address: %s", err.Error())

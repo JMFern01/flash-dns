@@ -65,10 +65,6 @@ func (f *FilterList) LoadFromFile(filename string) error {
 		domain  []string
 		regex   *regexp.Regexp
 	)
-	if err = logger.Init(logger.DefaultPath); err != nil {
-		return err
-	}
-
 	file, err = os.Open(filename)
 	if err != nil {
 		return err
