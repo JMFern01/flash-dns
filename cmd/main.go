@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"dns-server/internal/filter"
-	"dns-server/internal/logger"
-	"dns-server/internal/server"
+	"flash-dns/internal/filter"
+	"flash-dns/internal/logger"
+	"flash-dns/internal/server"
 	"flag"
 	"fmt"
 	"os"
@@ -28,6 +28,13 @@ func init() {
 	flag.StringVar(&filterDomainFile, "f", "", "Path to file with domains to be filtered")
 }
 
+func main() {
+	flag.Parse()
+	verifications()
+	getFilterList()
+	startServer()
+}
+
 func verifications() {
 	if os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "Script must be run a root")
@@ -42,7 +49,6 @@ func verifications() {
 
 func getFilterList() {
 	if filterDomainFile == "" {
-		filterList = filter.NewFilterList()
 		return
 	}
 
@@ -77,20 +83,17 @@ func startServer() {
 	}()
 
 	if start {
-		var server *server.DNSServer = server.NewDNSServer(localAddr, upstreamDns, filterList)
+
+		var (
+			dnsPort  string            = ":53"
+			config   server.Config     = server.Config{LocalAddr: localAddr + dnsPort, UpstreamDns: UpstreamDns + dnsPort, FilterMode: "nxdomain"}
+			resolver *server.Resolver  = server.NewUpstreamResolver(config.UpstreamDns)
+			server   *server.DNSServer = server.NewDNSServer(config, resolver, filterList)
+		)
 		if err = server.Start(ctx); err != nil {
 			logger.Error("Server gave an error: " + err.Error())
 			fmt.Fprintln(os.Stderr, "Server had an error while starting, is port 53 free?")
 			os.Exit(1)
 		}
 	}
-
-	logger.Info("Server Shutdown Complete and Successfully")
-}
-
-func main() {
-	flag.Parse()
-	verifications()
-	getFilterList()
-	startServer()
 }
