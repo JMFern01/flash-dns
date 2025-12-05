@@ -156,13 +156,19 @@ func (s *DNSServer) handleQuery(ctx context.Context, query []byte, clientAddr *n
 
 	// filtering the query
 	var (
-		cacheKey   string = utils.CreateCacheKey(query)
-		domainName string = utils.ParseDomainName(query)
-		response   []byte = make([]byte, 512)
+		queryInfo *utils.QueryInfo
+		err       error
+		response  []byte = make([]byte, 512)
 	)
-	if s.filter != nil && s.filter.IsBlocked(domainName) {
+	queryInfo, err = utils.ParseQuery(query)
+	if err != nil {
+		logger.Error(fmt.Sprintf("failed to parse query: %v", err))
+		return
+	}
+
+	if s.filter != nil && s.filter.IsBlocked(queryInfo.Domain) {
 		s.statistics.incrementBlocked()
-		logger.Info(fmt.Sprintf("BLOCKED: %s", domainName))
+		logger.Info(fmt.Sprintf("BLOCKED: %s", queryInfo.Domain))
 
 		copy(response, s.createBlockedResponse(query))
 		conn.WriteToUDP(response, clientAddr)
@@ -175,9 +181,9 @@ func (s *DNSServer) handleQuery(ctx context.Context, query []byte, clientAddr *n
 		cachedResponse []byte = make([]byte, 512)
 		found          bool
 	)
-	if cachedResponse, found = s.cache.Get(cacheKey); found {
+	if cachedResponse, found = s.cache.Get(queryInfo.CacheKey); found {
 		s.statistics.incrementCacheHits()
-		logger.Info(fmt.Sprintf("CACHE HIT: %s", domainName))
+		logger.Info(fmt.Sprintf("CACHE HIT: %s", queryInfo.Domain))
 
 		copy(response, cachedResponse)
 		copy(response[0:2], query[0:2])
@@ -187,22 +193,21 @@ func (s *DNSServer) handleQuery(ctx context.Context, query []byte, clientAddr *n
 	}
 
 	s.statistics.incrementCacheMisses()
-	logger.Info(fmt.Sprintf("CACHE MISS: %s - querying Upstream", domainName))
+	logger.Info(fmt.Sprintf("CACHE MISS: %s - querying Upstream", queryInfo.Domain))
 
 	// if miss, query upstream
 	var (
-		err error
 		ttl uint32
 	)
 	response, err = s.resolver.Resolve(ctx, query)
 	if err != nil {
-		logger.Error(fmt.Sprintf("Failed to Resolve: %s - %v", domainName, err))
+		logger.Error(fmt.Sprintf("Failed to Resolve: %s - %v", queryInfo.Domain, err))
 		return
 	}
 
 	ttl = utils.ExtractTTL(response)
-	s.cache.Set(cacheKey, response, ttl)
-	logger.Info(fmt.Sprintf("CACHED: %s (TTl: %ds)", domainName, ttl))
+	s.cache.Set(queryInfo.CacheKey, response, ttl)
+	logger.Info(fmt.Sprintf("CACHED: %s (TTl: %ds)", queryInfo.Domain, ttl))
 
 	conn.WriteToUDP(response, clientAddr)
 }

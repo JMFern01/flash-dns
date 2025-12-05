@@ -13,74 +13,73 @@ var builderPool = sync.Pool{
 	},
 }
 
-func parseDomainName(data []byte, offset int) (string, int) {
-	var builder *strings.Builder = builderPool.Get().(*strings.Builder)
+type QueryInfo struct {
+	Domain   string
+	CacheKey string
+	QType    uint16
+	QClass   uint16
+}
+
+func ParseQuery(query []byte) (*QueryInfo, error) {
+	var queryLength int = len(query)
+	if queryLength < 12 {
+		return nil, fmt.Errorf("query too short: %d bytes", len(query))
+	}
+
+	var (
+		builder  *strings.Builder = builderPool.Get().(*strings.Builder)
+		position int              = 12
+		length   int              = 0
+		domain   string
+		qtype    uint16
+		qclass   uint16
+		cacheKey string
+	)
 	builder.Reset()
 	defer builderPool.Put(builder)
 
-	var (
-		position int = offset
-		length   int
-	)
-	for {
-		length = int(data[position])
-		if length == 0 { // if zero, then it is the null terminator
+	for position < queryLength {
+		length = int(query[position])
+
+		if length == 0 {
 			position++
 			break
+		}
+
+		if length >= 192 {
+			position += 2
+			continue
 		}
 
 		if builder.Len() > 0 {
 			builder.WriteRune('.')
 		}
-
-		position++ // skips the length byte
-		builder.Write(data[position : position+length])
-		position += length // goes to the next length byte
-	}
-
-	return builder.String(), position
-}
-
-func ParseDomainName(query []byte) string {
-	if len(query) < 12 {
-		return ""
-	}
-
-	var (
-		domain   *strings.Builder = builderPool.Get().(*strings.Builder)
-		position int              = 12
-		length   int
-	)
-	domain.Reset()
-	defer builderPool.Put(domain)
-
-	for position < len(query) {
-		length = int(query[position])
-		if length == 0 {
-			break
-		}
-
-		if domain.Len() > 0 {
-			domain.WriteRune('.')
-		}
-
 		position++
-		if position+length > len(query) {
-			break
+
+		if position+length > queryLength {
+			return nil, fmt.Errorf("invalid domain name length")
 		}
 
-		_, _ = domain.Write(query[position : position+length])
+		builder.Write(query[position : position+length])
 		position += length
 	}
+	domain = builder.String()
 
-	return domain.String()
+	if position+4 > queryLength {
+		return nil, fmt.Errorf("query too short for QTYPE/QCLASS")
+	}
+
+	qtype = binary.BigEndian.Uint16(query[position : position+2])
+	qclass = binary.BigEndian.Uint16(query[position+2 : position+4])
+
+	cacheKey = fmt.Sprintf("%s:%d", domain, qtype)
+
+	return &QueryInfo{Domain: domain, QType: qtype, QClass: qclass, CacheKey: cacheKey}, nil
 }
 
 func ExtractTTL(response []byte) uint32 {
-	var result uint32 = 300 //default to 5 minutes (300 seconds)
-
 	if len(response) < 12 {
-		return result
+		return 300 // 5 minutes -> 60 * 5 = 300
 	}
 
 	// skip header (12 bytes)
@@ -140,24 +139,4 @@ func ExtractTTL(response []byte) uint32 {
 	}
 
 	return minTTL
-}
-
-func CreateCacheKey(query []byte) string {
-	var (
-		domain           string
-		position         int
-		qtype            uint16
-		skipHeaderOffset int = 12
-	)
-	if len(query) < 12 {
-		return ""
-	}
-
-	domain, position = parseDomainName(query, skipHeaderOffset)
-	if position > len(query) {
-		return domain
-	}
-
-	qtype = binary.BigEndian.Uint16(query[position : position+2])
-	return fmt.Sprintf("%s:%d", domain, qtype)
 }
