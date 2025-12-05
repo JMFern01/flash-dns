@@ -9,7 +9,7 @@ import (
 	"flash-dns/internal/utils"
 	"fmt"
 	"net"
-	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -65,15 +65,15 @@ func (s *Statistics) Log() {
 		cacheHits    uint64
 		cacheMisses  uint64
 		total        uint64
-		blockRate    float
-		CacheHitRate float
+		blockRate    float64
+		CacheHitRate float64
 	)
 
 	blocked, allowed, cacheHits, cacheMisses = s.GetStats()
 	total = blocked + allowed
 
-	blockRate = float(blocked) / float(total) * 100
-	CacheHitRate = float(cacheHits) / float(cacheHits+cacheMisses) * 100
+	blockRate = float64(blocked) / float64(total) * 100
+	CacheHitRate = float64(cacheHits) / float64(cacheHits+cacheMisses) * 100
 
 	logger.Info(fmt.Sprintf("Status - Total: %d | Blocked: %d (%.1f%%) | Cache Hit Rate: %.1f%%", total, blocked, blockRate, CacheHitRate))
 }
@@ -85,26 +85,26 @@ type UpstreamResolver struct {
 
 func NewUpstreamResolver(upstreamAddr string) *UpstreamResolver {
 	return &UpstreamResolver{
-		upstreamAddr: upstreamAddr + ":53",
+		upstreamAddr: upstreamAddr,
 		timeout:      5 * time.Second,
 	}
 }
 
-func (u *upstreamResolver) Resolve(ctx context.Context, query []byte) ([]byte, error) {
+func (u *UpstreamResolver) Resolve(ctx context.Context, query []byte) ([]byte, error) {
 	var (
 		conn      net.Conn
 		err       error
-		deadLine  time.Duration
+		deadline  time.Time
 		response  []byte = make([]byte, 512)
 		bytesRead int
 	)
-	conn, err = net.Dial("udp", s.upstreamAddr)
+	conn, err = net.Dial("udp", u.upstreamAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to upstream: %w", err)
 	}
 	defer conn.Close()
 
-	deadline = time.Now().Add(s.timeout)
+	deadline = time.Now().Add(u.timeout)
 	conn.SetDeadline(deadline)
 
 	if _, err = conn.Write(query); err != nil {
@@ -137,7 +137,7 @@ type DNSServer struct {
 }
 
 func NewDNSServer(config Config, resolver Resolver, filterList *filter.FilterList) *DNSServer {
-	var statistics *Statistics = &Statistics{}
+	var statistics Statistics = Statistics{}
 	return &DNSServer{
 		cache:      cache.NewDNSCache(),
 		config:     config,
@@ -216,13 +216,12 @@ func (s *DNSServer) createBlockedResponse(query []byte) []byte {
 
 func (s *DNSServer) Start(ctx context.Context) error {
 	var (
-		err      error
-		errorMsg string
-		addr     *net.UDPAddr
-		conn     *net.UDPConn
-		buffer   []byte = make([]byte, 512)
+		err    error
+		addr   *net.UDPAddr
+		conn   *net.UDPConn
+		buffer []byte = make([]byte, 512)
 	)
-	addr, err = net.ResolveUDPAddr("udp", s.localAddr)
+	addr, err = net.ResolveUDPAddr("udp", s.config.LocalAddr)
 	if err != nil {
 		return fmt.Errorf("Failed to resolve address: %w", err)
 	}
@@ -233,8 +232,8 @@ func (s *DNSServer) Start(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	logger.Info(fmt.Sprintf("DNS server is Listening on: %s", s.localAddr))
-	logger.Info(fmt.Sprintf("DNS server upstream dns: %s", s.upstreamDNS))
+	logger.Info(fmt.Sprintf("DNS server is Listening on: %s", s.config.LocalAddr))
+	logger.Info(fmt.Sprintf("DNS server upstream dns: %s", s.config.UpstreamDns))
 
 	if s.filter != nil {
 		logger.Info(fmt.Sprintf("Filter Loaded: %d domains", s.filter.Count()))
@@ -254,9 +253,9 @@ func (s *DNSServer) Start(ctx context.Context) error {
 		var (
 			bytesRead  int
 			clientAddr *net.UDPAddr
-			query      []byte = make([]byte, bytesRead)
+			query      []byte = make([]byte, 512)
 		)
-		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
 		bytesRead, clientAddr, err = conn.ReadFromUDP(buffer)
 		if err != nil {
@@ -297,7 +296,7 @@ func (s *DNSServer) cacheCleanUp(ctx context.Context) {
 	}
 }
 
-func (s *DNSServer) statsReporter(ctx) {
+func (s *DNSServer) statsReporter(ctx context.Context) {
 	var ticker *time.Ticker = time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -312,7 +311,7 @@ func (s *DNSServer) statsReporter(ctx) {
 	}
 }
 
-func (s *DNSServer) shutdownHandler(ctx, conn) {
+func (s *DNSServer) shutdownHandler(ctx context.Context, conn *net.UDPConn) {
 	<-ctx.Done()
 	logger.Info("Shutdown signal received, closing the server.")
 	conn.Close()

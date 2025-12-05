@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"flag"
 	"flash-dns/internal/filter"
 	"flash-dns/internal/logger"
 	"flash-dns/internal/server"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -85,10 +85,10 @@ func startServer() {
 	if start {
 
 		var (
-			dnsPort  string            = ":53"
-			config   server.Config     = server.Config{LocalAddr: localAddr + dnsPort, UpstreamDns: UpstreamDns + dnsPort, FilterMode: "nxdomain"}
-			resolver *server.Resolver  = server.NewUpstreamResolver(config.UpstreamDns)
-			server   *server.DNSServer = server.NewDNSServer(config, resolver, filterList)
+			dnsPort  string                   = ":53"
+			config   server.Config            = server.Config{LocalAddr: localAddr + dnsPort, UpstreamDns: upstreamDns + dnsPort, FilterMode: "nxdomain"}
+			resolver *server.UpstreamResolver = server.NewUpstreamResolver(config.UpstreamDns)
+			server   *server.DNSServer        = server.NewDNSServer(config, resolver, filterList)
 		)
 		if err = server.Start(ctx); err != nil {
 			logger.Error("Server gave an error: " + err.Error())
