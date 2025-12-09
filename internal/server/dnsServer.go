@@ -175,7 +175,7 @@ func (s *DNSServer) refreshCache(ctx context.Context, query []byte, queryInfo *u
 
 	ttl = utils.ExtractTTL(response)
 	s.cache.Set(queryInfo.CacheKey, response, ttl)
-	logger.Info(fmt.Sprintf("REFRESHED: %s (TTL %ds)", ttl))
+	logger.Info(fmt.Sprintf("REFRESHED: %s (TTL %ds)", queryInfo.Domain, ttl))
 }
 
 func (s *DNSServer) filterDomain(domain string) bool {
