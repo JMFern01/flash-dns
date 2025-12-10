@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const (
+var (
 	CACHE_MAX_SIZE       int           = 1024
 	GRACE_PERIOD         time.Duration = 5 * time.Minute // How long to accept expired entries
 	POPULARITY_THRESHOLD int64         = 5               // lower than that triggers eviction

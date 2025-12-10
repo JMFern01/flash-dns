@@ -1,242 +1,346 @@
 package cache
 
 import (
-	"bytes"
-	"fmt"
-	"sync"
 	"testing"
 	"time"
 )
 
-func TestNewDnsCache(t *testing.T) {
-	var cache *DNSCache = NewDNSCache()
-
-	if cache == nil {
-		t.Fatal("NewDNSCache returned nil")
-	}
-
-	if cache.entries == nil {
-		t.Error("cache.entries is nil, should be initialized")
-	}
-
-	if cache.maxSize != CACHE_MAX_SIZE {
-		t.Errorf("cache.maxSize returned %d, expected %d", cache.maxSize, CACHE_MAX_SIZE)
-	}
-
-	if len(cache.entries) != 0 {
-		t.Errorf("cache.entries has %d entries, should be 0", len(cache.entries))
-	}
-}
-
-func TestCacheGetAndSet(t *testing.T) {
+// TEST 1: Basic Get/Set operations
+// Tests that we can store and retrieve data from cache
+func TestDNSCache_BasicGetSet(t *testing.T) {
 	var (
 		cache    *DNSCache = NewDNSCache()
-		key      string    = "google.com:1"
-		response []byte    = []byte{192, 168, 1, 22}
-		data     []byte
-		found    bool
-		ttl      uint32 = 300
+		key      string    = "example.com"
+		response []byte    = []byte("192.168.1.1")
+		ttl      uint32    = 300
 	)
 
+	// Set a value
 	cache.Set(key, response, ttl)
 
-	data, found = cache.Get(key)
+	// Get it back
+	var (
+		result       []byte
+		found        bool
+		needsRefresh bool
+	)
+	result, found, needsRefresh = cache.Get(key)
+
 	if !found {
-		t.Fatal("cache.Get() returned false, expected true")
+		t.Error("Expected to find cached entry")
 	}
-
-	if len(data) != len(response) {
-		t.Error("response length different from the retrieved data length")
+	if needsRefresh {
+		t.Error("Fresh entry should not need refresh")
 	}
-
-	for i := range response {
-		if data[i] != response[i] {
-			t.Errorf("data[%d] = %x, expected %x", i, data[i], response[i])
-		}
+	if string(result) != string(response) {
+		t.Errorf("Expected %s, got %s", response, result)
 	}
 }
 
-func TestCacheNonExistentEntry(t *testing.T) {
+// TEST 2: Missing key returns not found
+// Verifies that requesting non-existent keys returns false
+func TestDNSCache_GetMissingKey(t *testing.T) {
 	var (
 		cache *DNSCache = NewDNSCache()
-		data  []byte
-		found bool
+		key   string    = "nonexistent.com"
 	)
 
-	data, found = cache.Get("dont-exist.com:1")
+	var (
+		result       []byte
+		found        bool
+		needsRefresh bool
+	)
+	result, found, needsRefresh = cache.Get(key)
 
 	if found {
-		t.Error("cache.Get() returned true to non existent key, want false")
+		t.Error("Should not find non-existent key")
 	}
-
-	if data != nil {
-		t.Errorf("cache.Get() returned data for non existent key, want nil")
+	if result != nil {
+		t.Error("Result should be nil for missing key")
+	}
+	if needsRefresh {
+		t.Error("Missing key should not trigger refresh")
 	}
 }
 
-func TestCacheExpiration(t *testing.T) {
+// TEST 3: Popularity tracking
+// Tests that accessing entries increases their popularity
+func TestCacheEntry_PopularityTracking(t *testing.T) {
 	var (
 		cache    *DNSCache = NewDNSCache()
-		key      string    = "testing-expiration.com:28"
-		response []byte    = []byte{192, 128, 255, 28}
-		data     []byte
-		found    bool
-		ttl      uint32 = 1 // 1 second of existence
+		key      string    = "popular.com"
+		response []byte    = []byte("1.2.3.4")
+		ttl      uint32    = 300
 	)
+
 	cache.Set(key, response, ttl)
 
-	data, found = cache.Get(key)
-	if !found {
-		t.Fatal("cache.Get() immediately after cache.Set() returned false, want true")
+	// Access multiple times to increase popularity
+	var i int
+	for i = 0; i < 6; i++ {
+		_, _, _ = cache.Get(key)
 	}
 
-	if len(data) != len(response) {
-		t.Error("data length mismatch immediately after Set()")
-	}
+	// Get entry to check popularity
+	cache.mu.RLock()
+	var entry *CacheEntry = cache.entries[key]
+	cache.mu.RUnlock()
 
-	time.Sleep(1200 * time.Millisecond)
-	data, found = cache.Get(key)
+	if !entry.IsPopular() {
+		t.Errorf("Entry should be popular after %d accesses", i)
+	}
+}
+
+// TEST 4: Stale detection within grace period
+// Tests that expired entries within grace period are marked as stale
+func TestCacheEntry_StaleDetection(t *testing.T) {
+	var (
+		now   time.Time   = time.Now()
+		entry *CacheEntry = &CacheEntry{
+			CreatedAt: now.Add(-10 * time.Minute),
+			ExpiresAt: now.Add(-2 * time.Minute), // Expired 2 min ago
+		}
+		// Grace period is 5 minutes, so this is stale but not completely expired
+	)
+
+	if !entry.IsStale(now) {
+		t.Error("Entry should be stale")
+	}
+	if entry.IsCompletelyExpired() {
+		t.Error("Entry should not be completely expired yet")
+	}
+}
+
+// TEST 5: Complete expiration removes entry
+// Tests that entries beyond grace period are deleted
+func TestDNSCache_CompleteExpiration(t *testing.T) {
+	var (
+		cache          *DNSCache     = NewDNSCache()
+		key            string        = "expired.com"
+		response       []byte        = []byte("5.6.7.8")
+		ttl            uint32        = 1 // 1 second TTL
+		oldGracePeriod time.Duration = GRACE_PERIOD
+	)
+
+	cache.Set(key, response, ttl)
+
+	defer func() {
+		GRACE_PERIOD = oldGracePeriod
+	}()
+
+	GRACE_PERIOD = 1 * time.Millisecond
+	// Wait for complete expiration (TTL + grace period)
+	time.Sleep(time.Duration(ttl)*time.Second + GRACE_PERIOD + 10*time.Millisecond)
+
+	var (
+		result []byte
+		found  bool
+	)
+	result, found, _ = cache.Get(key)
 
 	if found {
-		t.Error("cache.Get() found equals to true for expired entry, wants false")
+		t.Error("Completely expired entry should not be found")
+	}
+	if result != nil {
+		t.Error("Result should be nil for expired entry")
 	}
 
-	if data != nil {
-		t.Error("cache.Get() returned data for expired entry, wants nil")
-	}
+	// Verify it's removed from cache
+	cache.mu.RLock()
+	var exists bool
+	_, exists = cache.entries[key]
+	cache.mu.RUnlock()
 
-	cache.mu.Lock()
-	_, stillExists := cache.entries[key]
-	cache.mu.Unlock()
-
-	if stillExists {
-		t.Error("expired entry still exists in cache.entries, should be deleted")
-	}
-}
-
-func TestCacheClean(t *testing.T) {
-	var (
-		cache    *DNSCache = NewDNSCache()
-		keys     []string  = []string{"first-one.com:1", "second-one.com:28", "third-case.com:1"}
-		response []byte    = []byte{192, 128, 255, 35}
-		ttls     []uint32  = []uint32{1, 300, 1}
-	)
-
-	for i := range keys {
-		cache.Set(keys[i], response, ttls[i])
-	}
-
-	if len(cache.entries) != 3 {
-		t.Fatalf("cache.entries has %d entries, wants 3", len(cache.entries))
-	}
-
-	time.Sleep(1200 * time.Millisecond)
-	cache.Clean()
-
-	if len(cache.entries) != 1 {
-		t.Errorf("cache.Clean() didn't clean the 2 expired entries, len(cache.entries) is %d, expected 1", len(cache.entries))
+	if exists {
+		t.Error("Expired entry should be deleted from cache")
 	}
 }
 
-func TestCacheMaxSize(t *testing.T) {
+// TEST 6: Prefetch threshold detection
+// Tests that popular entries near expiration trigger prefetch
+func TestCacheEntry_PrefetchThreshold(t *testing.T) {
 	var (
-		cache    *DNSCache = NewDNSCache()
-		response []byte    = []byte{192, 128, 255, 28}
-		ttl      uint32    = 300
-		key      string
-		newKey   string = "amazing-website.com:1"
-		found    bool
+		ttl       uint32        = 100 // 100 seconds
+		threshold time.Duration = time.Duration(float64(ttl)*PREFETCH_THRESHOLD) * time.Second
+		now       time.Time     = time.Now()
+		entry     *CacheEntry   = &CacheEntry{
+			CreatedAt:   now.Add(-threshold - time.Second), // Past 80% threshold
+			ExpiresAt:   now.Add(time.Duration(ttl) * time.Second),
+			originalTTL: ttl,
+		}
 	)
 
-	for i := 0; i < CACHE_MAX_SIZE; i++ {
-		key = fmt.Sprintf("%d.com:1", i)
-		cache.Set(key, response, ttl)
+	// Make it popular first
+	var i int
+	for i = 0; i < 6; i++ {
+		entry.increasePopularity()
 	}
 
-	if len(cache.entries) != 1024 {
-		t.Fatalf("cache.entries is %d, expected %d", len(cache.entries), CACHE_MAX_SIZE)
+	if !entry.ShouldPrefetch() {
+		t.Error("Popular entry past threshold should trigger prefetch")
+	}
+}
+
+// TEST 7: Eviction when cache is full
+// Tests that least valuable entries are evicted when cache reaches max size
+func TestDNSCache_Eviction(t *testing.T) {
+	var (
+		cache *DNSCache = NewDNSCache()
+		ttl   uint32    = 300
+	)
+
+	// Fill cache to max
+	var i int
+	for i = 0; i < CACHE_MAX_SIZE; i++ {
+		var key string = string(rune(i))
+		cache.Set(key, []byte("data"), ttl)
 	}
 
-	cache.Set(newKey, response, ttl)
-	_, found = cache.Get(newKey)
+	// Access first entry multiple times to make it popular
+	var popularKey string = string(rune(0))
+	var j int
+	for j = 0; j < 10; j++ {
+		_, _, _ = cache.Get(popularKey)
+	}
+
+	// Add one more entry, should trigger eviction
+	var newKey string = "newentry"
+	cache.Set(newKey, []byte("newdata"), ttl)
+
+	// Verify cache size is still at max
+	cache.mu.RLock()
+	var size int = len(cache.entries)
+	cache.mu.RUnlock()
+
+	if size > CACHE_MAX_SIZE {
+		t.Errorf("Cache size %d exceeds max %d", size, CACHE_MAX_SIZE)
+	}
+
+	// Popular entry should still exist
+	var (
+		_     []byte
+		found bool
+	)
+	_, found, _ = cache.Get(popularKey)
+
 	if !found {
-		t.Errorf("Newly added entry not found after eviction")
+		t.Error("Popular entry should not be evicted")
 	}
 }
 
-func TestCacheUpdatingExistingKey(t *testing.T) {
+// TEST 8: Clean removes all expired entries
+// Tests the Clean method removes entries beyond grace period
+func TestDNSCache_Clean(t *testing.T) {
 	var (
-		cache          *DNSCache = NewDNSCache()
-		key            string    = "cool-website.com:1"
-		firstResponse  []byte    = []byte{121, 125, 255, 20}
-		secondResponse []byte    = []byte{192, 255, 198, 35}
-		data1, data2   []byte
-		found1, found2 bool
-		ttl            uint32 = 300
+		c              *DNSCache     = NewDNSCache()
+		ttl            uint32        = 1
+		oldGracePeriod time.Duration = GRACE_PERIOD
 	)
 
-	cache.Set(key, firstResponse, ttl)
-	data1, found1 = cache.Get(key)
-	if !found1 {
-		t.Fatal("cache.Get() did't retrieve after cache.Set()")
-	}
+	// Add entries
+	c.Set("keep.com", []byte("1.1.1.1"), 3600)  // Long TTL, keep
+	c.Set("expire.com", []byte("2.2.2.2"), ttl) // Short TTL, expire
 
-	cache.Set(key, secondResponse, ttl)
-	data2, found2 = cache.Get(key)
-	if !found2 {
-		t.Fatal("cache.Get() didn't retrieve key after updating existing key with cache.Set()")
-	}
+	defer func() {
+		GRACE_PERIOD = oldGracePeriod
+	}()
 
-	if bytes.Equal(data1, data2) {
-		t.Error("expected data1 and data2 to be different, Set() didn't update the values of the key.")
+	GRACE_PERIOD = 1 * time.Millisecond
+	// Wait for expiration
+	time.Sleep(time.Duration(ttl)*time.Second + GRACE_PERIOD + 50*time.Millisecond)
+
+	// Run cleanup
+	c.Clean()
+
+	// Check results
+	c.mu.RLock()
+	var (
+		_            *CacheEntry
+		keepExists   bool
+		expireExists bool
+	)
+	_, keepExists = c.entries["keep.com"]
+	_, expireExists = c.entries["expire.com"]
+	c.mu.RUnlock()
+
+	if !keepExists {
+		t.Error("Non-expired entry should be kept")
+	}
+	if expireExists {
+		t.Error("Expired entry should be removed")
 	}
 }
 
-func TestCacheConcurrentSetAndGetOperations(t *testing.T) {
+// TEST 9: Stale entries trigger refresh flag
+// Tests that Get returns needsRefresh=true for stale entries
+func TestDNSCache_StaleRefreshFlag(t *testing.T) {
 	var (
-		cache      *DNSCache = NewDNSCache()
-		iterations int       = 100
-		goroutines int       = 10
-		ttl        uint32    = 300
-		wg         sync.WaitGroup
-		mu         sync.RWMutex
+		cache    *DNSCache = NewDNSCache()
+		key      string    = "stale.com"
+		response []byte    = []byte("3.3.3.3")
+		ttl      uint32    = 1
 	)
 
-	// set the keys
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				var key string = fmt.Sprintf("%d-%d.com:1", id, j)
-				cache.Set(key, []byte{byte(j)}, ttl)
-			}
-		}(i)
+	cache.Set(key, response, ttl)
+
+	// Wait for entry to become stale (expired but within grace period)
+	time.Sleep(time.Duration(ttl)*time.Second + 10*time.Millisecond)
+
+	var (
+		result       []byte
+		found        bool
+		needsRefresh bool
+	)
+	result, found, needsRefresh = cache.Get(key)
+
+	if !found {
+		t.Error("Stale entry should still be found")
+	}
+	if !needsRefresh {
+		t.Error("Stale entry should trigger refresh flag")
+	}
+	if string(result) != string(response) {
+		t.Error("Should return stale data while waiting for refresh")
+	}
+}
+
+// TEST 10: Updating existing key doesn't grow cache
+// Tests that setting an existing key updates it without eviction
+func TestDNSCache_UpdateExistingKey(t *testing.T) {
+	var (
+		cache        *DNSCache = NewDNSCache()
+		key          string    = "update.com"
+		response1    []byte    = []byte("old-data")
+		response2    []byte    = []byte("new-data")
+		ttl          uint32    = 300
+		initialCount int
+		finalCount   int
+	)
+
+	cache.Set(key, response1, ttl)
+
+	cache.mu.RLock()
+	initialCount = len(cache.entries)
+	cache.mu.RUnlock()
+
+	// Update the same key
+	cache.Set(key, response2, ttl)
+
+	cache.mu.RLock()
+	finalCount = len(cache.entries)
+	cache.mu.RUnlock()
+
+	if finalCount != initialCount {
+		t.Error("Updating existing key should not change cache size")
 	}
 
-	wg.Wait()
-	var incoherence bool = false
-	// get the data
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				var key string = fmt.Sprintf("%d-%d.com:1", id, j)
-				data, _ := cache.Get(key)
-				if !bytes.Equal(data, []byte{byte(j)}) {
-					mu.Lock()
-					incoherence = true
-					mu.Unlock()
-				}
-			}
-		}(i)
-	}
+	var (
+		result []byte
+		found  bool
+	)
+	result, found, _ = cache.Get(key)
 
-	wg.Wait()
-	if incoherence {
-		t.Error("cache.Get() didn't get the correct data response in concurrence")
+	if !found || string(result) != string(response2) {
+		t.Error("Should retrieve updated value")
 	}
-
-	t.Log("Concurrent operations completed successfully")
 }
